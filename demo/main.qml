@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtPositioning
 import QtLocation
-import QtCore
 
 Window {
 	id: root
@@ -14,8 +13,6 @@ Window {
 	readonly property string apiBase: "http://127.0.0.1:8080"
 	readonly property string osmTilesUrl: "https://tile.openstreetmap.org/%z/%x/%y.png"
 	readonly property string customTilesUrl: apiBase + "/tiles/%z/%x/%y.png"
-	readonly property string customCacheDir: StandardPaths.writableLocation(StandardPaths.CacheLocation)
-		+ "/OsmDemoCustom"
 
 	property bool useCustomServer: false
 	property bool customMapReady: false
@@ -245,7 +242,7 @@ Window {
 				name: "osm"
 				PluginParameter { name: "osm.useragent"; value: "OsmDemo/0.1.0-custom" }
 				PluginParameter { name: "osm.mapping.providersrepository.disabled"; value: true }
-				PluginParameter { name: "osm.mapping.cache.directory"; value: root.customCacheDir }
+				PluginParameter { name: "osm.mapping.cache.directory"; value: customCacheDir }
 				PluginParameter { name: "osm.mapping.custom.host"; value: root.customTilesUrl }
 				PluginParameter { name: "osm.mapping.custom.mapcopyright"; value: "PurrCat custom tiles" }
 			}

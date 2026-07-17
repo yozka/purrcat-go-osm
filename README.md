@@ -42,5 +42,7 @@ Build: `build/demo_mac/` / `build/demo_windows/`
 ## Dependencies
 
 - CMake 3.21+, C++20
-- OpenSSL (macOS: `brew install openssl@3`)
+- OpenSSL
+  - macOS: `brew install openssl@3`
+  - Windows: `winget install ShiningLight.OpenSSL.Dev` (or set `OPENSSL_ROOT_DIR`)
 - cpp-httplib + nlohmann/json + stb (vendored in `third_party/`)

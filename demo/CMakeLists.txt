@@ -10,12 +10,13 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS
-	Core
-	Gui
-	Quick
-	QuickControls2
-	Positioning
-	Location
+    Core
+    Gui
+    Qml
+    Quick
+    QuickControls2
+    Positioning
+    Location
 )
 
 qt_standard_project_setup(REQUIRES 6.5)
@@ -24,31 +25,48 @@ qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 
 qt_add_executable(OsmDemo
-	main.cpp
+    main.cpp
 )
 
 qt_add_qml_module(OsmDemo
-	URI OsmDemo
-	VERSION 1.0
-	QML_FILES
-		main.qml
+    URI OsmDemo
+    VERSION 1.0
+    QML_FILES
+        main.qml
 )
 
 set_target_properties(OsmDemo PROPERTIES
-	MACOSX_BUNDLE TRUE
-	WIN32_EXECUTABLE TRUE
-	OUTPUT_NAME OsmDemo
-	MACOSX_BUNDLE_BUNDLE_NAME "OsmDemo"
-	MACOSX_BUNDLE_GUI_IDENTIFIER "com.purrcatgo.osmdemo"
-	MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
-	MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE TRUE
+    WIN32_EXECUTABLE TRUE
+    OUTPUT_NAME OsmDemo
+
+    MACOSX_BUNDLE_BUNDLE_NAME "OsmDemo"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.purrcatgo.osmdemo"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
 )
 
 target_link_libraries(OsmDemo PRIVATE
-	Qt6::Core
-	Qt6::Gui
-	Qt6::Quick
-	Qt6::QuickControls2
-	Qt6::Positioning
-	Qt6::Location
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Positioning
+    Qt6::Location
 )
+
+# Установка приложения
+install(TARGETS OsmDemo
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION .
+)
+
+# Автоматический deployment Qt и QML-модулей
+qt_generate_deploy_qml_app_script(
+    TARGET OsmDemo
+    OUTPUT_SCRIPT deploy_script
+    NO_TRANSLATIONS
+)
+
+install(SCRIPT ${deploy_script})

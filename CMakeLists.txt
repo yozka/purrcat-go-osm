@@ -6,18 +6,31 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Homebrew OpenSSL on Apple Silicon / Intel
-if(APPLE AND NOT OPENSSL_ROOT_DIR)
-	foreach(_openssl_hint
-		/opt/homebrew/opt/openssl@3
-		/usr/local/opt/openssl@3
-		/opt/homebrew/opt/openssl
-		/usr/local/opt/openssl)
-		if(EXISTS "${_openssl_hint}")
-			set(OPENSSL_ROOT_DIR "${_openssl_hint}")
-			break()
-		endif()
-	endforeach()
+# Common OpenSSL install layouts (Homebrew / Win64)
+if(NOT OPENSSL_ROOT_DIR)
+	if(APPLE)
+		foreach(_openssl_hint
+			/opt/homebrew/opt/openssl@3
+			/usr/local/opt/openssl@3
+			/opt/homebrew/opt/openssl
+			/usr/local/opt/openssl)
+			if(EXISTS "${_openssl_hint}")
+				set(OPENSSL_ROOT_DIR "${_openssl_hint}")
+				break()
+			endif()
+		endforeach()
+	elseif(WIN32)
+		foreach(_openssl_hint
+			"$ENV{ProgramFiles}/OpenSSL-Win64"
+			"$ENV{ProgramW6432}/OpenSSL-Win64"
+			"C:/Program Files/OpenSSL-Win64"
+			"C:/OpenSSL-Win64")
+			if(EXISTS "${_openssl_hint}/include/openssl/ssl.h")
+				set(OPENSSL_ROOT_DIR "${_openssl_hint}")
+				break()
+			endif()
+		endforeach()
+	endif()
 endif()
 
 find_package(OpenSSL REQUIRED)

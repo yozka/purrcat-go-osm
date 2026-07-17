@@ -14,7 +14,7 @@ set "ROOT=%PROJECT%\demo"
 set "BUILD_DIR=%PROJECT%\build\demo_windows"
 
 if not defined QT_WINDOWS set "QT_WINDOWS=%USERPROFILE%\Qt\6.11.1\msvc2022_64"
-set "QT_CMAKE=%QT_WINDOWS%\bin\qt-cmake.exe"
+set "QT_CMAKE=%QT_WINDOWS%\bin\qt-cmake.bat"
 
 if not exist "%QT_CMAKE%" (
     echo qt-cmake not found: %QT_CMAKE%
