@@ -444,6 +444,7 @@ bool RegionService::downloadGeometry(const RegionId &id, JobState &state)
 	q1 << "[out:json][timeout:180];\n(\n"
 	   << "  way[\"highway\"](" << bb << ");\n"
 	   << "  way[\"natural\"=\"water\"](" << bb << ");\n"
+	   << "  relation[\"type\"=\"multipolygon\"][\"natural\"=\"water\"](" << bb << ");\n"
 	   << "  way[\"waterway\"](" << bb << ");\n"
 	   << "  way[\"natural\"=\"coastline\"](" << bb << ");\n"
 	   << "  way[\"landuse\"~\"grass|forest|meadow|recreation_ground|village_green\"](" << bb << ");\n"

@@ -17,7 +17,8 @@ struct LonLat {
 enum class FeatureKind {
 	Road,
 	Building,
-	Water,
+	Water,     // filled areas: natural=water, riverbank, …
+	Waterway,  // stroked lines: river, stream, canal, …
 	Green,
 	Coast
 };

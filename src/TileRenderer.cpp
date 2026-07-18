@@ -2,16 +2,15 @@
 
 #include "json.hpp"
 
+#include <blend2d/blend2d.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <numbers>
+#include <utility>
 #include <vector>
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
 
 namespace purrcat::osm {
 namespace {
@@ -55,10 +54,23 @@ FeatureKind classifyTags(const nlohmann::json &tags)
 		return FeatureKind::Building;
 	if (tags.contains("natural") && tags["natural"] == "coastline")
 		return FeatureKind::Coast;
+
+	// Linear channels are stroked. Area waterways (riverbank, …) are filled.
+	if (tags.contains("waterway")) {
+		const std::string v = tags["waterway"].is_string()
+			? tags["waterway"].get<std::string>()
+			: std::string{};
+		const bool area = (tags.contains("area") && tags["area"] == "yes")
+			|| v == "riverbank" || v == "dock" || v == "boatyard";
+		if (area)
+			return FeatureKind::Water;
+		return FeatureKind::Waterway;
+	}
+
+	// All natural=water areas (lake, pond, river polygon, …) are filled.
 	if (tags.contains("natural") && tags["natural"] == "water")
 		return FeatureKind::Water;
-	if (tags.contains("waterway"))
-		return FeatureKind::Water;
+
 	if (tags.contains("landuse")) {
 		const std::string v = tags["landuse"].get<std::string>();
 		if (v == "grass" || v == "forest" || v == "meadow" || v == "recreation_ground" || v == "village_green")
@@ -79,6 +91,101 @@ FeatureKind classifyTags(const nlohmann::json &tags)
 	return FeatureKind::Road;
 }
 
+bool samePoint(const LonLat &a, const LonLat &b)
+{
+	constexpr double kEps = 1e-7;
+	return std::abs(a.lon - b.lon) < kEps && std::abs(a.lat - b.lat) < kEps;
+}
+
+bool isGeometricallyClosed(const std::vector<LonLat> &ring)
+{
+	if (ring.size() < 3)
+		return false;
+	return samePoint(ring.front(), ring.back());
+}
+
+std::vector<LonLat> parseGeometryRing(const nlohmann::json &geom)
+{
+	std::vector<LonLat> ring;
+	if (!geom.is_array())
+		return ring;
+	ring.reserve(geom.size());
+	for (const auto &g : geom) {
+		if (!g.contains("lat") || !g.contains("lon"))
+			continue;
+		ring.push_back({g["lon"].get<double>(), g["lat"].get<double>()});
+	}
+	return ring;
+}
+
+/// Merge open multipolygon outer pieces into closed rings by matching endpoints.
+std::vector<std::vector<LonLat>> stitchRings(std::vector<std::vector<LonLat>> parts)
+{
+	std::vector<std::vector<LonLat>> closed;
+	std::vector<std::vector<LonLat>> open;
+
+	for (auto &part : parts) {
+		if (part.size() < 2)
+			continue;
+		if (isGeometricallyClosed(part)) {
+			closed.push_back(std::move(part));
+		} else {
+			open.push_back(std::move(part));
+		}
+	}
+
+	bool merged = true;
+	while (merged && !open.empty()) {
+		merged = false;
+		for (size_t i = 0; i < open.size() && !merged; ++i) {
+			for (size_t j = i + 1; j < open.size(); ++j) {
+				auto &a = open[i];
+				auto &b = open[j];
+				if (samePoint(a.back(), b.front())) {
+					a.insert(a.end(), b.begin() + 1, b.end());
+					open.erase(open.begin() + static_cast<std::ptrdiff_t>(j));
+					merged = true;
+					break;
+				}
+				if (samePoint(a.back(), b.back())) {
+					a.insert(a.end(), b.rbegin() + 1, b.rend());
+					open.erase(open.begin() + static_cast<std::ptrdiff_t>(j));
+					merged = true;
+					break;
+				}
+				if (samePoint(a.front(), b.back())) {
+					b.insert(b.end(), a.begin() + 1, a.end());
+					open[i] = std::move(b);
+					open.erase(open.begin() + static_cast<std::ptrdiff_t>(j));
+					merged = true;
+					break;
+				}
+				if (samePoint(a.front(), b.front())) {
+					std::vector<LonLat> rev(a.rbegin(), a.rend());
+					rev.insert(rev.end(), b.begin() + 1, b.end());
+					open[i] = std::move(rev);
+					open.erase(open.begin() + static_cast<std::ptrdiff_t>(j));
+					merged = true;
+					break;
+				}
+			}
+		}
+		if (merged && isGeometricallyClosed(open[0])) {
+			// fall through — check all after loop iteration
+		}
+		for (auto it = open.begin(); it != open.end();) {
+			if (isGeometricallyClosed(*it)) {
+				closed.push_back(std::move(*it));
+				it = open.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+
+	return closed;
+}
+
 bool intersects(const BBox &a, const BBox &b)
 {
 	return !(a.maxLon < b.minLon || a.minLon > b.maxLon || a.maxLat < b.minLat || a.minLat > b.maxLat);
@@ -96,95 +203,35 @@ BBox ringBBox(const std::vector<LonLat> &ring)
 	return b;
 }
 
-void putPixel(std::vector<std::uint8_t> &img, int x, int y, std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a = 255)
+BLPath ringToPath(const std::vector<LonLat> &ring, int z, int tileX, int tileY, bool close)
 {
-	if (x < 0 || y < 0 || x >= kTileSize || y >= kTileSize)
-		return;
-	const size_t i = static_cast<size_t>((y * kTileSize + x) * 4);
-	const float srcA = a / 255.f;
-	const float dstA = img[i + 3] / 255.f;
-	const float outA = srcA + dstA * (1.f - srcA);
-	if (outA <= 0.f)
-		return;
-	img[i + 0] = static_cast<std::uint8_t>((r * srcA + img[i + 0] * dstA * (1.f - srcA)) / outA);
-	img[i + 1] = static_cast<std::uint8_t>((g * srcA + img[i + 1] * dstA * (1.f - srcA)) / outA);
-	img[i + 2] = static_cast<std::uint8_t>((b * srcA + img[i + 2] * dstA * (1.f - srcA)) / outA);
-	img[i + 3] = static_cast<std::uint8_t>(outA * 255.f);
+	BLPath path;
+	if (ring.empty())
+		return path;
+
+	double px = 0, py = 0;
+	lonLatToPixel(ring[0].lon, ring[0].lat, z, tileX, tileY, px, py);
+	path.move_to(px, py);
+	for (size_t i = 1; i < ring.size(); ++i) {
+		lonLatToPixel(ring[i].lon, ring[i].lat, z, tileX, tileY, px, py);
+		path.line_to(px, py);
+	}
+	if (close)
+		path.close();
+	return path;
 }
 
-void drawLine(std::vector<std::uint8_t> &img, int x0, int y0, int x1, int y1,
-	std::uint8_t r, std::uint8_t g, std::uint8_t b, int thickness)
+std::vector<std::uint8_t> encodePng(const BLImage &img)
 {
-	const int dx = std::abs(x1 - x0);
-	const int dy = std::abs(y1 - y0);
-	const int sx = x0 < x1 ? 1 : -1;
-	const int sy = y0 < y1 ? 1 : -1;
-	int err = dx - dy;
-	for (;;) {
-		for (int oy = -thickness; oy <= thickness; ++oy) {
-			for (int ox = -thickness; ox <= thickness; ++ox) {
-				if (ox * ox + oy * oy <= thickness * thickness)
-					putPixel(img, x0 + ox, y0 + oy, r, g, b);
-			}
-		}
-		if (x0 == x1 && y0 == y1)
-			break;
-		const int e2 = 2 * err;
-		if (e2 > -dy) {
-			err -= dy;
-			x0 += sx;
-		}
-		if (e2 < dx) {
-			err += dx;
-			y0 += sy;
-		}
-	}
-}
+	BLImageCodec codec;
+	if (codec.find_by_name("PNG") != BL_SUCCESS)
+		return {};
 
-void fillPolygon(std::vector<std::uint8_t> &img, const std::vector<std::pair<double, double>> &pts,
-	std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a)
-{
-	if (pts.size() < 3)
-		return;
-	double minY = pts[0].second, maxY = pts[0].second;
-	for (const auto &p : pts) {
-		minY = std::min(minY, p.second);
-		maxY = std::max(maxY, p.second);
-	}
-	const int y0 = std::max(0, static_cast<int>(std::floor(minY)));
-	const int y1 = std::min(kTileSize - 1, static_cast<int>(std::ceil(maxY)));
-	for (int y = y0; y <= y1; ++y) {
-		std::vector<double> nodes;
-		for (size_t i = 0, j = pts.size() - 1; i < pts.size(); j = i++) {
-			const double yi = pts[i].second;
-			const double yj = pts[j].second;
-			const double xi = pts[i].first;
-			const double xj = pts[j].first;
-			if ((yi < y && yj >= y) || (yj < y && yi >= y)) {
-				nodes.push_back(xi + (y - yi) / (yj - yi + 1e-12) * (xj - xi));
-			}
-		}
-		std::sort(nodes.begin(), nodes.end());
-		for (size_t i = 0; i + 1 < nodes.size(); i += 2) {
-			const int xStart = std::max(0, static_cast<int>(std::floor(nodes[i])));
-			const int xEnd = std::min(kTileSize - 1, static_cast<int>(std::ceil(nodes[i + 1])));
-			for (int x = xStart; x <= xEnd; ++x)
-				putPixel(img, x, y, r, g, b, a);
-		}
-	}
-}
+	BLArray<std::uint8_t> encoded;
+	if (img.write_to_data(encoded, codec) != BL_SUCCESS)
+		return {};
 
-std::vector<std::uint8_t> encodePng(const std::vector<std::uint8_t> &rgba)
-{
-	std::vector<std::uint8_t> png;
-	stbi_write_png_to_func(
-		[](void *context, void *data, int size) {
-			auto *out = static_cast<std::vector<std::uint8_t> *>(context);
-			const auto *bytes = static_cast<const std::uint8_t *>(data);
-			out->insert(out->end(), bytes, bytes + size);
-		},
-		&png, kTileSize, kTileSize, 4, rgba.data(), kTileSize * 4);
-	return png;
+	return {encoded.data(), encoded.data() + encoded.size()};
 }
 
 } // namespace
@@ -251,86 +298,128 @@ std::vector<Feature> TileRenderer::loadFeaturesForTile(int z, int x, int y, BBox
 	std::vector<Feature> features;
 	features.reserve((*osm)["elements"].size());
 
-	for (const auto &el : (*osm)["elements"]) {
-		if (!el.contains("type") || el["type"] != "way")
-			continue;
-		if (!el.contains("geometry") || !el["geometry"].is_array())
-			continue;
-
-		Feature f;
-		f.kind = el.contains("tags") ? classifyTags(el["tags"]) : FeatureKind::Road;
-		for (const auto &g : el["geometry"]) {
-			if (!g.contains("lat") || !g.contains("lon"))
-				continue;
-			f.ring.push_back({g["lon"].get<double>(), g["lat"].get<double>()});
-		}
+	auto pushAreaOrLine = [&](Feature f) {
 		if (f.ring.size() < 2)
+			return;
+		const bool areaKind = (f.kind == FeatureKind::Building || f.kind == FeatureKind::Water || f.kind == FeatureKind::Green);
+		f.closed = areaKind && isGeometricallyClosed(f.ring);
+		// Open waterway/coast/road stay as lines. Open "area" tags without closed geom → skip fill.
+		if (areaKind && !f.closed)
+			return;
+		if (!intersects(ringBBox(f.ring), tileBBox))
+			return;
+		features.push_back(std::move(f));
+	};
+
+	for (const auto &el : (*osm)["elements"]) {
+		if (!el.contains("type"))
 			continue;
 
-		f.closed = (f.kind == FeatureKind::Building || f.kind == FeatureKind::Water || f.kind == FeatureKind::Green);
-		if (f.closed && f.ring.front().lat != f.ring.back().lat) {
-			// keep as-is; fill handles open rings via closing edge in scanline if first!=last
+		if (el["type"] == "way") {
+			if (!el.contains("geometry") || !el["geometry"].is_array())
+				continue;
+			Feature f;
+			f.kind = el.contains("tags") ? classifyTags(el["tags"]) : FeatureKind::Road;
+			f.ring = parseGeometryRing(el["geometry"]);
+			pushAreaOrLine(std::move(f));
+			continue;
 		}
 
-		if (!intersects(ringBBox(f.ring), tileBBox))
-			continue;
-		features.push_back(std::move(f));
+		// Multipolygon water (Danube etc.): assemble outer member ways into closed rings.
+		if (el["type"] == "relation") {
+			if (!el.contains("tags") || !el.contains("members") || !el["members"].is_array())
+				continue;
+			const FeatureKind kind = classifyTags(el["tags"]);
+			if (kind != FeatureKind::Water && kind != FeatureKind::Green)
+				continue;
+
+			std::vector<std::vector<LonLat>> parts;
+			for (const auto &m : el["members"]) {
+				if (!m.contains("type") || m["type"] != "way")
+					continue;
+				const std::string role = m.contains("role") && m["role"].is_string()
+					? m["role"].get<std::string>()
+					: std::string{};
+				if (role == "inner")
+					continue; // holes ignored for now
+				if (!m.contains("geometry"))
+					continue;
+				auto ring = parseGeometryRing(m["geometry"]);
+				if (ring.size() >= 2)
+					parts.push_back(std::move(ring));
+			}
+
+			for (auto &ring : stitchRings(std::move(parts))) {
+				Feature f;
+				f.kind = kind;
+				f.ring = std::move(ring);
+				f.closed = true;
+				if (!intersects(ringBBox(f.ring), tileBBox))
+					continue;
+				features.push_back(std::move(f));
+			}
+		}
 	}
 	return features;
 }
 
 std::vector<std::uint8_t> TileRenderer::rasterize(int z, int x, int y, const std::vector<Feature> &features) const
 {
-	std::vector<std::uint8_t> img(static_cast<size_t>(kTileSize * kTileSize * 4), 255);
+	BLImage img(kTileSize, kTileSize, BL_FORMAT_PRGB32);
+	BLContext ctx(img);
+	if (!ctx.is_valid())
+		return {};
+
+	ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
+	ctx.set_fill_rule(BL_FILL_RULE_NON_ZERO);
+	ctx.set_stroke_caps(BL_STROKE_CAP_ROUND);
+	ctx.set_stroke_join(BL_STROKE_JOIN_ROUND);
+
 	// Cat-style warm ground
-	for (int i = 0; i < kTileSize * kTileSize; ++i) {
-		img[static_cast<size_t>(i) * 4 + 0] = 246;
-		img[static_cast<size_t>(i) * 4 + 1] = 236;
-		img[static_cast<size_t>(i) * 4 + 2] = 220;
-		img[static_cast<size_t>(i) * 4 + 3] = 255;
-	}
+	ctx.fill_all(BLRgba32(246, 236, 220, 255));
 
-	auto project = [&](const LonLat &p) {
-		double px, py;
-		lonLatToPixel(p.lon, p.lat, z, x, y, px, py);
-		return std::pair<double, double>{px, py};
-	};
-
-	// Green / water / buildings first
+	// Green / water / buildings first (closed rings only)
 	for (const auto &f : features) {
+		if (!f.closed)
+			continue;
 		if (f.kind != FeatureKind::Green && f.kind != FeatureKind::Water && f.kind != FeatureKind::Building)
 			continue;
-		std::vector<std::pair<double, double>> pts;
-		pts.reserve(f.ring.size());
-		for (const auto &p : f.ring)
-			pts.push_back(project(p));
-		if (f.kind == FeatureKind::Green)
-			fillPolygon(img, pts, 120, 180, 110, 220);
-		else if (f.kind == FeatureKind::Water)
-			fillPolygon(img, pts, 90, 160, 210, 230);
-		else
-			fillPolygon(img, pts, 220, 150, 120, 230);
-	}
-
-	// Roads / coast on top
-	for (const auto &f : features) {
-		if (f.kind != FeatureKind::Road && f.kind != FeatureKind::Coast)
+		if (f.ring.size() < 3)
 			continue;
-		const int thickness = (f.kind == FeatureKind::Coast) ? 2 : (z >= 18 ? 2 : 1);
-		std::uint8_t r = 90, g = 70, b = 55;
-		if (f.kind == FeatureKind::Coast) {
-			r = 40;
-			g = 90;
-			b = 140;
-		}
-		for (size_t i = 1; i < f.ring.size(); ++i) {
-			const auto a = project(f.ring[i - 1]);
-			const auto c = project(f.ring[i]);
-			drawLine(img, static_cast<int>(a.first), static_cast<int>(a.second),
-				static_cast<int>(c.first), static_cast<int>(c.second), r, g, b, thickness);
-		}
+
+		BLRgba32 color(220, 150, 120, 230);
+		if (f.kind == FeatureKind::Green)
+			color = BLRgba32(120, 180, 110, 220);
+		else if (f.kind == FeatureKind::Water)
+			color = BLRgba32(90, 160, 210, 230);
+
+		const BLPath path = ringToPath(f.ring, z, x, y, true);
+		ctx.fill_path(path, color);
 	}
 
+	// Roads / coast / waterways on top
+	for (const auto &f : features) {
+		if (f.kind != FeatureKind::Road && f.kind != FeatureKind::Coast && f.kind != FeatureKind::Waterway)
+			continue;
+		if (f.ring.size() < 2)
+			continue;
+
+		double thickness = (z >= 18 ? 2.0 : 1.0);
+		BLRgba32 color(90, 70, 55, 255);
+		if (f.kind == FeatureKind::Coast) {
+			thickness = 2.0;
+			color = BLRgba32(40, 90, 140, 255);
+		} else if (f.kind == FeatureKind::Waterway) {
+			thickness = (z >= 18 ? 2.5 : 1.5);
+			color = BLRgba32(90, 160, 210, 255);
+		}
+
+		const BLPath path = ringToPath(f.ring, z, x, y, false);
+		ctx.set_stroke_width(thickness * 2.0 + 1.0);
+		ctx.stroke_path(path, color);
+	}
+
+	ctx.end();
 	return encodePng(img);
 }
 
