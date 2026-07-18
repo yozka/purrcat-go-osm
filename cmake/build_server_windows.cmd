@@ -8,6 +8,20 @@ for %%I in ("%~dp0..") do set "ROOT=%%~fI"
 set "BUILD_DIR=%ROOT%\build\server_windows"
 set "DATA_DIR=%BUILD_DIR%\data"
 
+REM OpenSSL (headers + libs). Env override: set OPENSSL_ROOT_DIR=...
+if not defined OPENSSL_ROOT_DIR (
+    if exist "%ProgramFiles%\OpenSSL-Win64\include\openssl\ssl.h" set "OPENSSL_ROOT_DIR=%ProgramFiles%\OpenSSL-Win64"
+)
+if not defined OPENSSL_ROOT_DIR (
+    if exist "C:\OpenSSL-Win64\include\openssl\ssl.h" set "OPENSSL_ROOT_DIR=C:\OpenSSL-Win64"
+)
+if not defined OPENSSL_ROOT_DIR (
+    echo OpenSSL not found. Install the Win64 Dev package, then re-run:
+    echo   winget install ShiningLight.OpenSSL.Dev
+    echo Or set OPENSSL_ROOT_DIR to the install root ^(folder with include\ and lib\^).
+    exit /b 1
+)
+
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 if not exist "%DATA_DIR%\tiles" mkdir "%DATA_DIR%\tiles"
 if not exist "%DATA_DIR%\geometry" mkdir "%DATA_DIR%\geometry"
@@ -15,10 +29,11 @@ if not exist "%DATA_DIR%\geometry" mkdir "%DATA_DIR%\geometry"
 pushd "%BUILD_DIR%"
 
 echo ==^> Configuring purrcat-osm-tiles
-cmake "%ROOT%" -G "Visual Studio 17 2022" -A x64
+echo     OPENSSL_ROOT_DIR=%OPENSSL_ROOT_DIR%
+cmake "%ROOT%" -G "Visual Studio 17 2022" -A x64 -DOPENSSL_ROOT_DIR="%OPENSSL_ROOT_DIR%"
 if errorlevel 1 (
     echo Fallback: trying default generator
-    cmake "%ROOT%"
+    cmake "%ROOT%" -DOPENSSL_ROOT_DIR="%OPENSSL_ROOT_DIR%"
     if errorlevel 1 (
         popd
         exit /b 1
