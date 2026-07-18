@@ -45,4 +45,8 @@ Build: `build/demo_mac/` / `build/demo_windows/`
 - OpenSSL
   - macOS: `brew install openssl@3`
   - Windows: `winget install ShiningLight.OpenSSL.Dev` (or set `OPENSSL_ROOT_DIR`)
-- cpp-httplib + nlohmann/json + stb (vendored in `third_party/`)
+- Blend2D + AsmJit (git submodules in `third_party/`)
+  ```bash
+  git submodule update --init --recursive
+  ```
+- cpp-httplib + nlohmann/json (vendored in `third_party/`)

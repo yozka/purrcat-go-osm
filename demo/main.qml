@@ -12,7 +12,10 @@ Window {
 
 	readonly property string apiBase: "http://127.0.0.1:8080"
 	readonly property string osmTilesUrl: "https://tile.openstreetmap.org/%z/%x/%y.png"
-	readonly property string customTilesUrl: apiBase + "/tiles/%z/%x/%y.png"
+	// ?v= busts Qt OSM disk cache after Reload
+	property int tileRevision: 1
+	readonly property string customTilesUrl: apiBase + "/tiles/%z/%x/%y.png?v=" + tileRevision
+	readonly property string activeCustomCacheDir: customCacheDir + "/r" + tileRevision
 
 	property bool useCustomServer: false
 	property bool customMapReady: false
@@ -59,13 +62,14 @@ Window {
 		requestEnsure()
 	}
 
-	/// Reload: сброс серверных PNG + пересоздание кастомной карты.
+	/// Reload: сброс серверных PNG + новый Qt tile-cache + пересоздание карты.
 	function reloadRegion() {
 		if (!useCustomServer)
 			return
 		loadingRegion = true
 		customMapReady = false
 		customMapLoader.active = false
+		tileRevision += 1
 		loadProgress = 0
 		statusText = "Перезагрузка региона…"
 		apiGet("/tiles/clear", function () {
@@ -242,7 +246,7 @@ Window {
 				name: "osm"
 				PluginParameter { name: "osm.useragent"; value: "OsmDemo/0.1.0-custom" }
 				PluginParameter { name: "osm.mapping.providersrepository.disabled"; value: true }
-				PluginParameter { name: "osm.mapping.cache.directory"; value: customCacheDir }
+				PluginParameter { name: "osm.mapping.cache.directory"; value: root.activeCustomCacheDir }
 				PluginParameter { name: "osm.mapping.custom.host"; value: root.customTilesUrl }
 				PluginParameter { name: "osm.mapping.custom.mapcopyright"; value: "PurrCat custom tiles" }
 			}
